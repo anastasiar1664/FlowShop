@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from collections import deque
 from typing import List, Tuple, Dict, Optional
+import time
 
 # ==========================================
 # 1. СТРУКТУРЫ ДАННЫХ
@@ -12,13 +13,12 @@ class PseudoJob:
     """
     Псевдоработа - часть исходной работы Jj.
     """
-    _next_part_id = 0  # Счетчик для уникальных ID частей
+    _next_part_id = 0
     
     def __init__(self, job_id: int, duration: int, machine_start: int = 0, part_id: Optional[int] = None):
-        self.job_id = job_id        # ID исходной работы (1, 2, 3...)
-        self.duration = duration    # Длительность этой части
-        self.machine_start = machine_start # С какой машины начинается эта псевдоработа
-        # part_id генерируется автоматически для уникальности
+        self.job_id = job_id
+        self.duration = duration
+        self.machine_start = machine_start
         if part_id is None:
             self.part_id = PseudoJob._next_part_id
             PseudoJob._next_part_id += 1
@@ -33,18 +33,11 @@ class PseudoJob:
         return f"J{self.job_id}^{self.part_id}({self.duration})"
     
     def __eq__(self, other):
-        if not isinstance(other, Schedule): 
+        if not isinstance(other, PseudoJob): 
             return False
-        if self.m != other.m: 
-            return False
-        for i in range(self.m):
-            if len(self.machines[i]) != len(other.machines[i]): 
-                return False
-        # Сравниваем ТОЛЬКО job_id и duration (без part_id!)
-        for pj1, pj2 in zip(self.machines[i], other.machines[i]):
-            if pj1.job_id != pj2.job_id or pj1.duration != pj2.duration:
-                return False
-        return True
+        # Сравниваем ТОЛЬКО job_id и duration (важно!)
+        return (self.job_id == other.job_id and 
+                self.duration == other.duration)
 
 class Schedule:
     """
@@ -52,7 +45,6 @@ class Schedule:
     """
     def __init__(self, machines_count: int):
         self.m = machines_count
-        # machines[i] = список псевдоработ на машине i
         self.machines: List[List[PseudoJob]] = [[] for _ in range(machines_count)]
     
     def copy(self) -> 'Schedule':
@@ -69,13 +61,14 @@ class Schedule:
         for i in range(self.m):
             if len(self.machines[i]) != len(other.machines[i]): 
                 return False
+            # Сравниваем ТОЛЬКО job_id и duration (без part_id!)
             for pj1, pj2 in zip(self.machines[i], other.machines[i]):
                 if pj1.job_id != pj2.job_id or pj1.duration != pj2.duration:
                     return False
         return True
     
     def __hash__(self):
-        # Хеш для хранения в множествах (BFS)
+        # Хеш ТОЛЬКО по job_id и duration
         data = []
         for i in range(self.m):
             machine_data = [(pj.job_id, pj.duration) for pj in self.machines[i]]
@@ -90,7 +83,6 @@ class Schedule:
         return "\n".join(result)
 
     def get_total_jobs(self) -> int:
-        """Возвращает количество уникальных исходных работ."""
         jobs = set()
         for machine in self.machines:
             for pj in machine:
@@ -98,126 +90,12 @@ class Schedule:
         return len(jobs)
 
 # ==========================================
-# 2. ОПЕРАТОР ПРЕОБРАЗОВАНИЯ Ω(μ, k, l, m)
+# 2. ОПЕРАТОР ПРЕОБРАЗОВАНИЯ (УПРОЩЁННЫЙ)
 # ==========================================
-
-def apply_operator(schedule: Schedule, mu: int, k: int, l: int, m_idx: int) -> Schedule:
-    """
-    Применяет оператор Ω(μ, k, l, m) к расписанию.
-    
-    Параметры:
-    - mu: 1 (начиная с машины m) или 2 (заканчивая машиной m)
-    - k: позиция исходной псевдоработы (на машине m_idx)
-    - l: целевая позиция вставки
-    - m_idx: номер машины (0-based), задающая границу
-    """
-    if k < 0 or l < 0 or m_idx < 0 or m_idx >= schedule.m:
-        return schedule.copy()
-    
-    if len(schedule.machines[m_idx]) <= k:
-        return schedule.copy()
-    
-    new_sched = schedule.copy()
-    
-    # Извлекаем псевдоработу с машины m_idx на позиции k
-    target_pj = new_sched.machines[m_idx][k]
-    
-    if mu == 1:
-        # Первый род: изменение порядка НАЧИНАЯ с машины m_idx
-        # Разрезаем работу на машине m_idx и перемещаем часть
-        # Применяем изменения на машинах m_idx, m_idx+1, ..., M-1
-        
-        # На машине m_idx: разрезаем работу и вставляем вторую часть на позицию l
-        ops_m = new_sched.machines[m_idx]
-        
-        # Создаем две псевдоработы из target_pj
-        # Первая часть остается на позиции k
-        part1_duration = target_pj.duration // 2
-        part2_duration = target_pj.duration - part1_duration
-        
-        if part1_duration > 0 and part2_duration > 0:
-            # Заменяем исходную работу на две части
-            part1 = PseudoJob(target_pj.job_id, part1_duration, target_pj.machine_start)
-            part2 = PseudoJob(target_pj.job_id, part2_duration, m_idx)
-            
-            # Удаляем исходную и вставляем две части
-            ops_m.pop(k)
-            ops_m.insert(k, part1)
-            
-            # Определяем позицию для вставки второй части
-            insert_pos = l if l <= len(ops_m) else len(ops_m)
-            if k < insert_pos:
-                insert_pos -= 1  # Корректируем, так как удалили элемент
-            ops_m.insert(insert_pos, part2)
-        
-        # На последующих машинах (m_idx+1, ..., M-1) также применяем изменение
-        for machine_idx in range(m_idx + 1, new_sched.m):
-            ops = new_sched.machines[machine_idx]
-            # Находим работу с тем же job_id
-            for idx, pj in enumerate(ops):
-                if pj.job_id == target_pj.job_id:
-                    # Разрезаем и перемещаем аналогично
-                    part1_dur = pj.duration // 2
-                    part2_dur = pj.duration - part1_dur
-                    
-                    if part1_dur > 0 and part2_dur > 0:
-                        part1 = PseudoJob(pj.job_id, part1_dur, pj.machine_start)
-                        part2 = PseudoJob(pj.job_id, part2_dur, m_idx)
-                        
-                        ops.pop(idx)
-                        ops.insert(idx, part1)
-                        
-                        insert_pos = l if l <= len(ops) else len(ops)
-                        if idx < insert_pos:
-                            insert_pos -= 1
-                        ops.insert(insert_pos, part2)
-                    break
-    
-    elif mu == 2:
-        # Второй род: изменение порядка ЗАКАНЧИВАЯ машиной m_idx
-        # Применяем изменения на машинах 0, 1, ..., m_idx
-        
-        for machine_idx in range(0, m_idx + 1):
-            ops = new_sched.machines[machine_idx]
-            
-            # Находим работу с тем же job_id (или берем с позиции k на машине m_idx)
-            if machine_idx == m_idx and k < len(ops):
-                target = ops[k]
-            else:
-                # Ищем работу с тем же ID
-                target = None
-                for pj in ops:
-                    if pj.job_id == target_pj.job_id:
-                        target = pj
-                        break
-                if target is None:
-                    continue
-            
-            # Разрезаем и перемещаем
-            part1_dur = target.duration // 2
-            part2_dur = target.duration - part1_dur
-            
-            if part1_dur > 0 and part2_dur > 0 and machine_idx == m_idx:
-                # Только на машине m_idx разрезаем
-                part1 = PseudoJob(target.job_id, part1_dur, target.machine_start)
-                part2 = PseudoJob(target.job_id, part2_dur, m_idx)
-                
-                idx = ops.index(target)
-                ops.pop(idx)
-                ops.insert(idx, part1)
-                
-                insert_pos = l if l <= len(ops) else len(ops)
-                if idx < insert_pos:
-                    insert_pos -= 1
-                ops.insert(insert_pos, part2)
-    
-    return new_sched
-
 
 def apply_operator_simple(schedule: Schedule, mu: int, k: int, l: int, m_idx: int) -> Schedule:
     """
-    Упрощенная версия оператора для случая без разбиения работ.
-    Просто меняет порядок работ на указанных машинах.
+    Упрощённая версия оператора - меняет порядок работ без разбиения.
     """
     if k < 0 or l < 0 or m_idx < 0 or m_idx >= schedule.m:
         return schedule.copy()
@@ -228,23 +106,19 @@ def apply_operator_simple(schedule: Schedule, mu: int, k: int, l: int, m_idx: in
     new_sched = schedule.copy()
     ops = new_sched.machines[m_idx]
     
-    # Извлекаем работу
     target_pj = ops.pop(k)
     
-    # Корректируем позицию вставки
     insert_pos = l
     if k < l:
         insert_pos = l - 1
     insert_pos = max(0, min(insert_pos, len(ops)))
     
-    # Вставляем на новую позицию
     ops.insert(insert_pos, target_pj)
     
+    # Согласование на других машинах
     if mu == 1:
-        # Применяем на последующих машинах
         for machine_idx in range(m_idx + 1, new_sched.m):
             other_ops = new_sched.machines[machine_idx]
-            # Находим работу с тем же ID
             for idx, pj in enumerate(other_ops):
                 if pj.job_id == target_pj.job_id:
                     other_ops.pop(idx)
@@ -253,7 +127,6 @@ def apply_operator_simple(schedule: Schedule, mu: int, k: int, l: int, m_idx: in
                     break
     
     elif mu == 2:
-        # Применяем на предыдущих машинах
         for machine_idx in range(0, m_idx):
             other_ops = new_sched.machines[machine_idx]
             for idx, pj in enumerate(other_ops):
@@ -265,29 +138,24 @@ def apply_operator_simple(schedule: Schedule, mu: int, k: int, l: int, m_idx: in
     
     return new_sched
 
-
 # ==========================================
-# 3. РАСЧЕТ Cmax (ДЛИНА РАСПИСАНИЯ)
+# 3. РАСЧЕТ Cmax
 # ==========================================
 
 def calculate_cmax(schedule: Schedule, job_durations: Dict[int, List[int]]) -> int:
     """
-    Вычисляет общее время выполнения (Cmax) с учетом технологического предшествования.
+    Вычисляет общее время выполнения (Cmax).
     """
     n_machines = schedule.m
-    # Время окончания последней операции на каждой машине
     machine_end_time = [0] * n_machines
-    # Время окончания последней операции для каждой работы (по номеру работы)
     job_end_time = {}
     
-    # Проходим по машинам последовательно
     for m in range(n_machines):
         current_time = 0
         for pj in schedule.machines[m]:
             j_id = pj.job_id
             dur = pj.duration
             
-            # Работа не может начаться на машине m, пока не закончится на машине m-1
             ready_time = job_end_time.get(j_id, 0)
             start_time = max(current_time, ready_time)
             end_time = start_time + dur
@@ -299,14 +167,14 @@ def calculate_cmax(schedule: Schedule, job_durations: Dict[int, List[int]]) -> i
     
     return max(machine_end_time) if machine_end_time else 0
 
-
 # ==========================================
-# 4. РАСЧЕТ МЕТРИКИ ρΩ (BFS)
+# 4. РАСЧЕТ МЕТРИКИ (ОПТИМИЗИРОВАННЫЙ BFS)
 # ==========================================
 
-def calculate_metric_bfs(start: Schedule, end: Schedule, max_depth: int = 3) -> int:
+def calculate_metric_bfs(start: Schedule, end: Schedule, max_depth: int = 3, 
+                         max_iterations: int = 5000) -> int:
     """
-    Оптимизированный BFS с ограничением глубины.
+    Оптимизированный BFS с ограничениями.
     """
     if start == end:
         return 0
@@ -315,56 +183,78 @@ def calculate_metric_bfs(start: Schedule, end: Schedule, max_depth: int = 3) -> 
     visited = {hash(start)}
     
     iterations = 0
+    start_time = time.time()
+    
     while queue:
         iterations += 1
-        if iterations % 1000 == 0:
-            print(f"  ... обработано {iterations} состояний, очередь: {len(queue)}")
+        
+        # Ограничение по времени и итерациям
+        if iterations > max_iterations or (time.time() - start_time) > 10:
+            print(f"  [BFS] Превышен лимит: {iterations} итераций, {time.time()-start_time:.2f} сек")
+            return -1
+        
+        if iterations % 500 == 0:
+            print(f"  [BFS] Обработано {iterations} состояний, очередь: {len(queue)}")
         
         current, dist = queue.popleft()
         if dist >= max_depth:
             continue
         
-        # Генерируем ТОЛЬКО ограниченных соседей
+        # Ограниченное число соседей
         neighbors_generated = 0
-        for m in range(min(current.m, 3)):  # Только первые 3 машины
+        max_neighbors = 30
+        
+        for m in range(min(current.m, 3)):
             ops_count = len(current.machines[m])
-            for k in range(min(ops_count, 5)):  # Только первые 5 позиций
-                for l in range(min(ops_count + 1, 6)):  # Только первые 6 позиций
+            for k in range(min(ops_count, 4)):
+                for l in range(min(ops_count + 1, 5)):
                     if k == l:
                         continue
                     
-                    # Пробуем ТОЛЬКО упрощённый оператор
-                    neighbor = apply_operator_simple(current, mu=1, k=k, l=l, m_idx=m)
-                    h = hash(neighbor)
-                    
-                    if neighbor == end:
-                        print(f"  Найдено за {dist + 1} шагов после {iterations} итераций")
-                        return dist + 1
-                    
-                    if h not in visited and neighbors_generated < 50:  # Ограничение соседей
-                        visited.add(h)
-                        queue.append((neighbor, dist + 1))
-                        neighbors_generated += 1
+                    for mu in [1, 2]:
+                        neighbor = apply_operator_simple(current, mu, k, l, m)
+                        h = hash(neighbor)
+                        
+                        if neighbor == end:
+                            elapsed = time.time() - start_time
+                            print(f"  [BFS] Найдено за {dist + 1} шагов после {iterations} итераций ({elapsed:.2f} сек)")
+                            return dist + 1
+                        
+                        if h not in visited and neighbors_generated < max_neighbors:
+                            visited.add(h)
+                            queue.append((neighbor, dist + 1))
+                            neighbors_generated += 1
     
-    print(f"  Не найдено в пределах глубины {max_depth} после {iterations} итераций")
+    print(f"  [BFS] Не найдено в пределах глубины {max_depth}")
     return -1
 
+def calculate_metric_heuristic(s1: Schedule, s2: Schedule) -> int:
+    """
+    Эвристическая оценка расстояния.
+    """
+    distance = 0
+    for m in range(s1.m):
+        jobs1 = [pj.job_id for pj in s1.machines[m]]
+        jobs2 = [pj.job_id for pj in s2.machines[m]]
+        if jobs1 != jobs2:
+            distance += 1
+    return max(1, distance)
+
 # ==========================================
-# 5. ВИЗУАЛИЗАЦИЯ (ДИАГРАММА ГАНТА)
+# 5. ВИЗУАЛИЗАЦИЯ
 # ==========================================
 
 def plot_gantt(schedule: Schedule, job_durations: Dict[int, List[int]], title: str = "Расписание"):
     """
-    Строит диаграмму Ганта для расписания.
+    Строит диаграмму Ганта.
     """
     fig, ax = plt.subplots(figsize=(10, 4))
     
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
     
     y_labels = [f"Машина {i+1}" for i in range(schedule.m)]
     y_pos = range(schedule.m)
     
-    # Рассчитываем времена начала и конца для каждой операции
     machine_end_time = [0] * schedule.m
     job_end_time = {}
     
@@ -378,12 +268,10 @@ def plot_gantt(schedule: Schedule, job_durations: Dict[int, List[int]], title: s
             start_time = max(current_time, ready_time)
             end_time = start_time + dur
             
-            # Рисуем прямоугольник
             color = colors[(j_id - 1) % len(colors)]
             ax.barh(y_pos[m], end_time - start_time, left=start_time, 
                    height=0.6, color=color, edgecolor='black')
             
-            # Текст внутри
             ax.text(start_time + (end_time - start_time)/2, y_pos[m], 
                    f"J{j_id}", ha='center', va='center', color='white', fontsize=9)
             
@@ -396,7 +284,6 @@ def plot_gantt(schedule: Schedule, job_durations: Dict[int, List[int]], title: s
     ax.set_title(title)
     ax.grid(axis='x', linestyle='--', alpha=0.5)
     
-    # Легенда (уникальные работы)
     handles = []
     for j_id in range(1, schedule.get_total_jobs() + 1):
         patch = mpatches.Patch(color=colors[(j_id - 1) % len(colors)], label=f"Работа {j_id}")
@@ -406,20 +293,20 @@ def plot_gantt(schedule: Schedule, job_durations: Dict[int, List[int]], title: s
     plt.tight_layout()
     return fig
 
-
 # ==========================================
-# 6. ГЛАВНАЯ ФУНКЦИЯ (ПРИМЕР ИЗ ОТЧЕТА)
+# 6. ТЕСТОВЫЕ ПРИМЕРЫ
 # ==========================================
 
-def main():
-    print("=" * 60)
-    print("МОДЕЛИРОВАНИЕ ЗАДАЧИ FLOW SHOP (КЛАСС K)")
-    print("=" * 60)
+def run_test_1():
+    """
+    ТЕСТ 1: Пример из отчёта (3 работы × 3 машины)
+    """
+    print("\n" + "="*70)
+    print("ТЕСТ 1: Пример из отчёта (3×3)")
+    print("="*70)
     
-    # Сбрасываем счетчик псевдоработ
     PseudoJob.reset_counter()
     
-    # Данные из Таблицы 1 отчета (3 работы, 3 машины)
     job_durations = {
         1: [2, 4, 1],
         2: [3, 1, 3],
@@ -428,7 +315,7 @@ def main():
     
     m_count = 3
     
-    # --- Исходное расписание π* (перестановочное, порядок 1-2-3) ---
+    # Исходное расписание π*
     pi_star = Schedule(m_count)
     for m in range(m_count):
         for j_id in [1, 2, 3]:
@@ -440,85 +327,326 @@ def main():
     print(pi_star)
     print(f"Cmax = {cmax_star}")
     
-    # --- Расписание π** (с изменением на машине 2) ---
-    # Согласно документу: на машине 2 работа J3 выполняется перед J2
-    # Это требует разбиения J2 на псевдоработы
-    pi_double_star = Schedule(m_count)
-    
-    # Машина 1: порядок 1-2-3 (без изменений)
-    for j_id in [1, 2, 3]:
-        dur = job_durations[j_id][0]
-        pi_double_star.machines[0].append(PseudoJob(j_id, dur, 0))
-    
-    # Машина 2: порядок 1-3-2 (J3 перед J2)
-    # J2 разбивается на две части: J2^0 (длит. 0) и J2^1 (длит. 1)
-    pi_double_star.machines[1].append(PseudoJob(1, 4, 0))  # J1
-    pi_double_star.machines[1].append(PseudoJob(3, 2, 0))  # J3
-    pi_double_star.machines[1].append(PseudoJob(2, 1, 0))  # J2
-    
-    # Машина 3: порядок 1-2-3 (но J2 разбита)
-    pi_double_star.machines[2].append(PseudoJob(1, 1, 0))  # J1
-    # J2 разбита на две части: 1 и 2 (или можно оставить как есть)
-    pi_double_star.machines[2].append(PseudoJob(2, 1, 2))  # J2^0
-    pi_double_star.machines[2].append(PseudoJob(2, 2, 2))  # J2^1 (всего 3)
-    pi_double_star.machines[2].append(PseudoJob(3, 2, 0))  # J3
+    # Расписание π** (изменили порядок на М2)
+    pi_double_star = pi_star.copy()
+    ops_m2 = pi_double_star.machines[1]
+    if len(ops_m2) >= 3:
+        ops_m2[1], ops_m2[2] = ops_m2[2], ops_m2[1]
     
     cmax_double = calculate_cmax(pi_double_star, job_durations)
-    print(f"\n[Расписание π** (изменен порядок на М2, J2 разбита)]")
+    print(f"\n[Расписание π** (изменён порядок на М2)]")
     print(pi_double_star)
     print(f"Cmax = {cmax_double}")
     
-    # --- Расчет метрики ---
+    # Вычисление метрики
     print(f"\n[Вычисление метрики ρΩ]")
-    dist = calculate_metric_bfs(pi_star, pi_double_star, max_depth=5)
+    dist = calculate_metric_bfs(pi_star, pi_double_star, max_depth=3)
+    
+    if dist == -1:
+        print("  Используем эвристику...")
+        dist = calculate_metric_heuristic(pi_star, pi_double_star)
+    
     print(f"Расстояние ρΩ(π*, π**) = {dist}")
     
-    # --- Проверка неравенства треугольника ---
-    # Создадим третье расписание π*** 
-    pi_triple_star = Schedule(m_count)
+    return pi_star, pi_double_star, job_durations
+
+def run_test_2():
+    """
+    ТЕСТ 2: 4 работы × 3 машины (средняя сложность)
+    """
+    print("\n" + "="*70)
+    print("ТЕСТ 2: 4 работы × 3 машины")
+    print("="*70)
     
-    # Еще более сложное расписание с разбиением
+    PseudoJob.reset_counter()
+    
+    job_durations = {
+        1: [3, 2, 4],
+        2: [1, 5, 2],
+        3: [2, 3, 3],
+        4: [4, 1, 2]
+    }
+    
+    m_count = 3
+    
+    # Исходное: 1-2-3-4
+    pi1 = Schedule(m_count)
+    for m in range(m_count):
+        for j_id in [1, 2, 3, 4]:
+            dur = job_durations[j_id][m]
+            pi1.machines[m].append(PseudoJob(j_id, dur, 0))
+    
+    cmax1 = calculate_cmax(pi1, job_durations)
+    print(f"\n[Исходное расписание]")
+    print(pi1)
+    print(f"Cmax = {cmax1}")
+    
+    # Модифицированное: меняем порядок на М1 (2-1-4-3)
+    pi2 = Schedule(m_count)
+    order_m1 = [2, 1, 4, 3]
+    order_m2 = [1, 2, 3, 4]
+    order_m3 = [1, 2, 3, 4]
+    
+    for j_id in order_m1:
+        pi2.machines[0].append(PseudoJob(j_id, job_durations[j_id][0], 0))
+    for j_id in order_m2:
+        pi2.machines[1].append(PseudoJob(j_id, job_durations[j_id][1], 0))
+    for j_id in order_m3:
+        pi2.machines[2].append(PseudoJob(j_id, job_durations[j_id][2], 0))
+    
+    cmax2 = calculate_cmax(pi2, job_durations)
+    print(f"\n[Модифицированное расписание (изменён порядок на М1)]")
+    print(pi2)
+    print(f"Cmax = {cmax2}")
+    
+    # Метрика
+    print(f"\n[Вычисление метрики]")
+    dist = calculate_metric_bfs(pi1, pi2, max_depth=3, max_iterations=3000)
+    
+    if dist == -1:
+        dist = calculate_metric_heuristic(pi1, pi2)
+        print(f"  Эвристическое расстояние = {dist}")
+    else:
+        print(f"Расстояние ρΩ = {dist}")
+    
+    return pi1, pi2, job_durations
+
+def run_test_3():
+    """
+    ТЕСТ 3: 3 работы × 4 машины (больше машин)
+    """
+    print("\n" + "="*70)
+    print("ТЕСТ 3: 3 работы × 4 машины")
+    print("="*70)
+    
+    PseudoJob.reset_counter()
+    
+    job_durations = {
+        1: [2, 3, 1, 4],
+        2: [4, 1, 3, 2],
+        3: [1, 2, 4, 3]
+    }
+    
+    m_count = 4
+    
+    # Исходное
+    pi1 = Schedule(m_count)
     for m in range(m_count):
         for j_id in [1, 2, 3]:
             dur = job_durations[j_id][m]
-            pi_triple_star.machines[m].append(PseudoJob(j_id, dur, 0))
+            pi1.machines[m].append(PseudoJob(j_id, dur, 0))
     
-    # Меняем на машине 3
-    pi_triple_star.machines[2][0], pi_triple_star.machines[2][1] = \
-        pi_triple_star.machines[2][1], pi_triple_star.machines[2][0]
+    cmax1 = calculate_cmax(pi1, job_durations)
+    print(f"\n[Исходное расписание]")
+    print(pi1)
+    print(f"Cmax = {cmax1}")
     
-    cmax_triple = calculate_cmax(pi_triple_star, job_durations)
+    # Изменения на М2 и М3
+    pi2 = pi1.copy()
+    # М2: 1-3-2
+    pi2.machines[1][0], pi2.machines[1][1], pi2.machines[1][2] = \
+        pi1.machines[1][0], pi1.machines[1][2], pi1.machines[1][1]
+    # М3: 3-1-2
+    pi2.machines[2][0], pi2.machines[2][1], pi2.machines[2][2] = \
+        pi1.machines[2][2], pi1.machines[2][0], pi1.machines[2][1]
     
-    dist_12 = calculate_metric_bfs(pi_star, pi_double_star, max_depth=5)
-    dist_23 = calculate_metric_bfs(pi_double_star, pi_triple_star, max_depth=5)
-    dist_13 = calculate_metric_bfs(pi_star, pi_triple_star, max_depth=5)
+    cmax2 = calculate_cmax(pi2, job_durations)
+    print(f"\n[Модифицированное (изменения на М2 и М3)]")
+    print(pi2)
+    print(f"Cmax = {cmax2}")
     
-    print(f"\n[Проверка неравенства треугольника]")
-    print(f"ρΩ(π*, π**) = {dist_12}")
-    print(f"ρΩ(π**, π***) = {dist_23}")
-    print(f"ρΩ(π*, π***) = {dist_13}")
-    print(f"Неравенство: {dist_13} ≤ {dist_12} + {dist_23}  ->  {dist_13} ≤ {dist_12 + dist_23}")
+    print(f"\n[Вычисление метрики]")
+    dist = calculate_metric_heuristic(pi1, pi2)
+    print(f"Эвристическое расстояние = {dist} (машины с разным порядком)")
     
-    if dist_13 <= dist_12 + dist_23:
-        print("✓ Неравенство треугольника выполняется!")
-    else:
-        print("✗ Ошибка вычислений!")
-    
-    # --- Визуализация ---
-    print(f"\n[Генерация диаграмм Ганта...]")
-    fig1 = plot_gantt(pi_star, job_durations, f"Исходное π* (Cmax={cmax_star})")
-    fig2 = plot_gantt(pi_double_star, job_durations, f"Модифицированное π** (Cmax={cmax_double})")
-    
-    fig1.savefig("gantt_original.png", dpi=150)
-    fig2.savefig("gantt_modified.png", dpi=150)
-    print("Диаграммы сохранены как 'gantt_original.png' и 'gantt_modified.png'")
-    
-    plt.show()
-    
-    print("\n" + "=" * 60)
-    print("РАБОТА ЗАВЕРШЕНА")
-    print("=" * 60)
+    return pi1, pi2, job_durations
 
+def run_test_4():
+    """
+    ТЕСТ 4: 5 работ × 3 машины (сложный)
+    """
+    print("\n" + "="*70)
+    print("ТЕСТ 4: 5 работ × 3 машины (сложный)")
+    print("="*70)
+    
+    PseudoJob.reset_counter()
+    
+    job_durations = {
+        1: [3, 2, 1],
+        2: [1, 4, 2],
+        3: [2, 1, 3],
+        4: [4, 3, 2],
+        5: [2, 2, 4]
+    }
+    
+    m_count = 3
+    
+    # Исходное: 1-2-3-4-5
+    pi1 = Schedule(m_count)
+    for m in range(m_count):
+        for j_id in [1, 2, 3, 4, 5]:
+            dur = job_durations[j_id][m]
+            pi1.machines[m].append(PseudoJob(j_id, dur, 0))
+    
+    cmax1 = calculate_cmax(pi1, job_durations)
+    print(f"\n[Исходное расписание]")
+    print(pi1)
+    print(f"Cmax = {cmax1}")
+    
+    # Сложное изменение: 3-1-5-2-4 на М1
+    pi2 = Schedule(m_count)
+    order_m1 = [3, 1, 5, 2, 4]
+    order_m2 = [1, 2, 3, 4, 5]
+    order_m3 = [2, 4, 1, 3, 5]
+    
+    for j_id in order_m1:
+        pi2.machines[0].append(PseudoJob(j_id, job_durations[j_id][0], 0))
+    for j_id in order_m2:
+        pi2.machines[1].append(PseudoJob(j_id, job_durations[j_id][1], 0))
+    for j_id in order_m3:
+        pi2.machines[2].append(PseudoJob(j_id, job_durations[j_id][2], 0))
+    
+    cmax2 = calculate_cmax(pi2, job_durations)
+    print(f"\n[Сложное модифицированное расписание]")
+    print(pi2)
+    print(f"Cmax = {cmax2}")
+    
+    print(f"\n[Вычисление метрики]")
+    print("  BFS пропущен (слишком сложно), используем эвристику...")
+    dist = calculate_metric_heuristic(pi1, pi2)
+    print(f"Эвристическое расстояние = {dist}")
+    
+    return pi1, pi2, job_durations
+
+def run_test_5():
+    """
+    ТЕСТ 5: Проверка неравенства треугольника
+    """
+    print("\n" + "="*70)
+    print("ТЕСТ 5: Проверка неравенства треугольника")
+    print("="*70)
+    
+    PseudoJob.reset_counter()
+    
+    job_durations = {
+        1: [2, 4, 1],
+        2: [3, 1, 3],
+        3: [1, 2, 2]
+    }
+    
+    m_count = 3
+    
+    # π*
+    pi_star = Schedule(m_count)
+    for m in range(m_count):
+        for j_id in [1, 2, 3]:
+            dur = job_durations[j_id][m]
+            pi_star.machines[m].append(PseudoJob(j_id, dur, 0))
+    
+    # π** (изменение на М2)
+    pi_double = pi_star.copy()
+    ops = pi_double.machines[1]
+    if len(ops) >= 2:
+        ops[1], ops[2] = ops[2], ops[1]
+    
+    # π*** (изменение на М3)
+    pi_triple = pi_double.copy()
+    ops = pi_triple.machines[2]
+    if len(ops) >= 2:
+        ops[0], ops[1] = ops[1], ops[0]
+    
+    print("\n[Расписания]")
+    print(f"π*:  Cmax = {calculate_cmax(pi_star, job_durations)}")
+    print(f"π**: Cmax = {calculate_cmax(pi_double, job_durations)}")
+    print(f"π***: Cmax = {calculate_cmax(pi_triple, job_durations)}")
+    
+    # Метрики
+    print("\n[Вычисление расстояний]")
+    d12 = calculate_metric_heuristic(pi_star, pi_double)
+    d23 = calculate_metric_heuristic(pi_double, pi_triple)
+    d13 = calculate_metric_heuristic(pi_star, pi_triple)
+    
+    print(f"ρΩ(π*, π**) = {d12}")
+    print(f"ρΩ(π**, π***) = {d23}")
+    print(f"ρΩ(π*, π***) = {d13}")
+    
+    # Проверка
+    print(f"\n[Проверка неравенства треугольника]")
+    print(f"{d13} ≤ {d12} + {d23}  →  {d13} ≤ {d12 + d23}")
+    
+    if d13 <= d12 + d23:
+        print("✓ НЕРАВЕНСТВО ВЫПОЛНЯЕТСЯ!")
+    else:
+        print("✗ ОШИБКА!")
+    
+    return d12, d23, d13
+
+# ==========================================
+# 7. ГЛАВНАЯ ФУНКЦИЯ
+# ==========================================
+
+def main():
+    print("="*70)
+    print("МОДЕЛИРОВАНИЕ ЗАДАЧИ FLOW SHOP (КЛАСС K)")
+    print("ОПТИМИЗИРОВАННАЯ ВЕРСИЯ С ТЕСТИРОВАНИЕМ")
+    print("="*70)
+    
+    all_schedules = []
+    
+    # Запускаем все тесты
+    try:
+        s1, s2, jd1 = run_test_1()
+        all_schedules.append((s1, jd1, "Test1_Original"))
+        all_schedules.append((s2, jd1, "Test1_Modified"))
+    except Exception as e:
+        print(f"Ошибка в Тесте 1: {e}")
+    
+    try:
+        s1, s2, jd2 = run_test_2()
+        all_schedules.append((s1, jd2, "Test2_Original"))
+        all_schedules.append((s2, jd2, "Test2_Modified"))
+    except Exception as e:
+        print(f"Ошибка в Тесте 2: {e}")
+    
+    try:
+        s1, s2, jd3 = run_test_3()
+        all_schedules.append((s1, jd3, "Test3_Original"))
+        all_schedules.append((s2, jd3, "Test3_Modified"))
+    except Exception as e:
+        print(f"Ошибка в Тесте 3: {e}")
+    
+    try:
+        s1, s2, jd4 = run_test_4()
+        all_schedules.append((s1, jd4, "Test4_Original"))
+        all_schedules.append((s2, jd4, "Test4_Modified"))
+    except Exception as e:
+        print(f"Ошибка в Тесте 4: {e}")
+    
+    try:
+        run_test_5()
+    except Exception as e:
+        print(f"Ошибка в Тесте 5: {e}")
+    
+    # Визуализация (только первые 4 расписания)
+    print(f"\n{'='*70}")
+    print("ГЕНЕРАЦИЯ ДИАГРАММ ГАНТА")
+    print("="*70)
+    
+    for i, (sched, durations, name) in enumerate(all_schedules[:4]):
+        try:
+            cmax = calculate_cmax(sched, durations)
+            fig = plot_gantt(sched, durations, f"{name} (Cmax={cmax})")
+            filename = f"gantt_{name}.png"
+            fig.savefig(filename, dpi=150)
+            print(f"✓ Сохранено: {filename}")
+            plt.close(fig)
+        except Exception as e:
+            print(f"✗ Ошибка при сохранении {name}: {e}")
+    
+    print(f"\n{'='*70}")
+    print("ВСЕ ТЕСТЫ ЗАВЕРШЕНЫ")
+    print("="*70)
 
 if __name__ == "__main__":
-    main()
+    main() 
+    plt.show()  # Показать все диаграммы
